@@ -32,55 +32,50 @@ void setup() {
     pinMode(bts[i], INPUT_PULLUP);
   }
 
-  // inicialização
-  sequenceQueue = xQueueCreate(MAX_SEQUENCE, sizeof(int));
+  // Inicialização
   sequenceMutex = xSemaphoreCreateMutex();
   gameEvents = xEventGroupCreate();
 
-  xTaskCreatePinnedToCore(generateSequenceTask, "Gerar Sequência", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(generateSequenceTask, "Gerar Sequência", 4096, NULL, 2, NULL, 1);
   xTaskCreatePinnedToCore(displaySequenceTask, "Exibir Sequência", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(playerInputTask, "Entrada Jogador", 4096, NULL, 1, NULL, 1);
 
   // Reinicia o jogo
   resetGame();
-  xEventGroupSetBits(gameEvents, EVENT_SEQUENCE_READY); // Inicia a geração da sequência
 }
 
 void loop() {
-  
+  // Mantém o sistema rodando
 }
 
 // Tarefa de Geração da sequência
 void generateSequenceTask(void *param) {
   while (1) {
-    // Aguarda o fim de uma rodada ou evento de reinício
-    xEventGroupWaitBits(gameEvents, EVENT_SEQUENCE_READY | EVENT_GAME_OVER, pdTRUE, pdFALSE, portMAX_DELAY);
+    // Espera sinal para gerar uma nova sequência
+    xEventGroupWaitBits(gameEvents, EVENT_SEQUENCE_READY, pdTRUE, pdFALSE, portMAX_DELAY);
 
     if (xEventGroupGetBits(gameEvents) & EVENT_GAME_OVER) {
-      break; // Finaliza a tarefa caso o jogo termine
+      continue; // Pausa a geração até resetar o jogo
     }
 
-    // Gera o próximo número da sequência
     int newNumber = random(0, 4);
     Serial.printf("Gerando número: %d\n", newNumber);
+
     xSemaphoreTake(sequenceMutex, portMAX_DELAY);
     generatedSequence[currentLength] = newNumber;
     currentLength++;
     xSemaphoreGive(sequenceMutex);
 
-    // Sinaliza que a sequência foi gerada e está pronta para exibição
-    xEventGroupSetBits(gameEvents, EVENT_SEQUENCE_READY);
-    vTaskDelay(500 / portTICK_PERIOD_MS);  // Atraso entre as gerações
+    vTaskDelay(500 / portTICK_PERIOD_MS); // Pequeno atraso
   }
 }
 
 // Tarefa de Exibição da sequência
 void displaySequenceTask(void *param) {
   while (1) {
-    // Aguarda o sinal de que a sequência está pronta para ser exibida
     xEventGroupWaitBits(gameEvents, EVENT_SEQUENCE_READY, pdTRUE, pdFALSE, portMAX_DELAY);
 
-    // Exibe a sequência armazenada
+    xSemaphoreTake(sequenceMutex, portMAX_DELAY);
     for (int i = 0; i < currentLength; i++) {
       int number = generatedSequence[i];
       Serial.printf("Exibindo: %d\n", number);
@@ -89,9 +84,8 @@ void displaySequenceTask(void *param) {
       digitalWrite(leds[number], LOW);
       delay(300);
     }
+    xSemaphoreGive(sequenceMutex);
 
-    // Sinaliza que o jogo está aguardando a entrada do jogador
-    xEventGroupClearBits(gameEvents, EVENT_SEQUENCE_READY);
     xEventGroupSetBits(gameEvents, EVENT_PLAYER_DONE);
   }
 }
@@ -99,18 +93,14 @@ void displaySequenceTask(void *param) {
 // Tarefa da entrada do jogador
 void playerInputTask(void *param) {
   while (1) {
-    // Aguarda o sinal de que a sequência foi exibida e o jogo está esperando a entrada do jogador
     xEventGroupWaitBits(gameEvents, EVENT_PLAYER_DONE, pdTRUE, pdFALSE, portMAX_DELAY);
 
     Serial.println("Aguardando entrada do jogador...");
-
     bool sequenceCorrect = true;
 
-    // Aguarda o jogador pressionar os botões
     for (int i = 0; i < currentLength; i++) {
       bool inputReceived = false;
 
-      // Aguarda o jogador pressionar um botão
       while (!inputReceived) {
         for (int j = 0; j < 4; j++) {
           if (isButtonPressed(bts[j])) {
@@ -124,17 +114,15 @@ void playerInputTask(void *param) {
         }
       }
 
-      // Verifica se a entrada do jogador
       if (playerInput[i] != generatedSequence[i]) {
         sequenceCorrect = false;
         break;
       }
     }
 
-    // Verifica a sequência e define o próximo passo
     if (sequenceCorrect) {
       Serial.println("Sequência correta! Próxima rodada.");
-      xEventGroupSetBits(gameEvents, EVENT_SEQUENCE_READY); // Prepara para a próxima rodada
+      xEventGroupSetBits(gameEvents, EVENT_SEQUENCE_READY);
     } else {
       Serial.println("Sequência errada. Fim de jogo.");
       xEventGroupSetBits(gameEvents, EVENT_GAME_OVER);
@@ -148,14 +136,14 @@ void resetGame() {
   currentLength = 0;
   Serial.println("Jogo reiniciado. Nova sequência gerada.");
 
-  // Indicação visual do reset
   for (int i = 0; i < 4; i++) {
     digitalWrite(leds[i], HIGH);
     delay(200);
     digitalWrite(leds[i], LOW);
   }
 
-  xEventGroupClearBits(gameEvents, EVENT_PLAYER_DONE | EVENT_GAME_OVER);
+  xEventGroupClearBits(gameEvents, EVENT_GAME_OVER | EVENT_PLAYER_DONE);
+  xEventGroupSetBits(gameEvents, EVENT_SEQUENCE_READY);
   delay(1000);
 }
 
